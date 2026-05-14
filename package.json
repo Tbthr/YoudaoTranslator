@@ -4,16 +4,18 @@
   "description": "Elegant translation tool",
   "main": "index.js",
   "scripts": {
-    "build": "rimraf dist && rollup -c rollup.config.js",
-    "test": "./runtime/quick ./dist/index.js"
+    "compile": "rimraf dist && mkdir -p dist/libs && tsc --outDir dist --module esnext --target es2018 --noEmitOnError false --esModuleInterop false --moduleResolution node --rootDir src --skipLibCheck --noImplicitAny false src/index.ts && cp src/libs/sha256.js src/libs/redaxios.js dist/libs/",
+    "bundle": "rollup -c rollup.config.js && mv dist/out.js dist/index.js",
+    "build": "pnpm compile && pnpm bundle",
+    "test": "./runtime/txiki ./dist/index.js"
   },
   "author": "Wenson",
   "license": "MIT",
   "devDependencies": {
+    "@rollup/plugin-node-resolve": "^16.0.3",
     "rimraf": "^3.0.2",
     "rollup": "^2.59.0",
     "rollup-plugin-copy": "^3.4.0",
-    "rollup-plugin-ts": "^1.4.7",
     "rollup-plugin-uglify": "^6.0.4",
     "typescript": "^4.4.4"
   }

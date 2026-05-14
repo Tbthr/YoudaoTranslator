@@ -1,31 +1,30 @@
-import { Adapter } from "./adapters/adapter";
-import Adapters from "./adapters";
+import Youdao from "./adapters";
 import redaxios from './libs/redaxios'
 import Workflow from './workflow/workflow'
 
-interface ITranslator {
-  adapter: Adapter;
-  translate: (word: string) => Promise<any>;
-}
+class Translator {
 
-class Translator implements ITranslator{
+  adapter: Youdao;
 
-  adapter: Adapter;
-
-  constructor(key: string, secret: string, platform: string) {
-    this.adapter = new Adapters[platform](key, secret);
+  constructor(key: string, secret: string) {
+    this.adapter = new Youdao(key, secret);
   }
 
-  public async translate(query: string): Promise<any> {
-    // camel case to space case
-    const word = query.replace(/([A-Z])/g, ' $1').toLowerCase();
-    // url
-    const url = this.adapter.url(word);
-    // fetch
-    const response = await redaxios.create().get(url);
-    // parse
+  public async translate(query: string): Promise<string> {
+    const word = query.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
+    const body = this.adapter.llmBody(word);
+
+    const http = redaxios.create();
+    const response = await http.post(
+      'https://openapi.youdao.com/proxy/http/llm-trans',
+      body,
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        responseType: 'text',
+      }
+    );
+
     const result = this.adapter.parse(response.data);
-    // compose
     return new Workflow().compose(result).output();
   }
 }

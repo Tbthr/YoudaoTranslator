@@ -1,17 +1,16 @@
-import ts from 'rollup-plugin-ts'
+import { nodeResolve } from '@rollup/plugin-node-resolve'
 import copy from 'rollup-plugin-copy'
 import { uglify } from 'rollup-plugin-uglify'
 
 export default {
-  input: 'src/index.ts',
+  input: 'dist/index.js',
   output: {
-    dir: 'dist'
+    file: 'dist/out.js',
+    format: 'esm'
   },
-  
+
   plugins: [
-    ts({
-      tsconfig: "tsconfig.json"
-    }),
+    nodeResolve({ extensions: ['.js'] }),
     copy({targets: [
       { src: 'runtime/*', dest: 'dist/runtime' },
       { src: 'assets/*', dest: 'dist/assets' }

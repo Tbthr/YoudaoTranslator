@@ -1,7 +1,8 @@
-import { Adapter, Result } from "./adapter";
-import md5 from "../libs/md5";
+import { Result } from "./adapter";
+import sha256 from "../libs/sha256";
 
-class Youdao implements Adapter {
+class Youdao {
+
   key: string;
 
   secret: string;
@@ -12,135 +13,118 @@ class Youdao implements Adapter {
 
   results: Result[] = [];
 
-  phonetic: string = "";
-
   constructor(key: string, secret: string) {
     this.key = key;
     this.secret = secret;
   }
 
-  url(word: string): string {
+  private buildSign(q: string, salt: string, curtime: string): string {
+    const input = q.length > 20
+      ? q.slice(0, 10) + q.length + q.slice(-10)
+      : q;
+    return sha256(`${this.key}${input}${salt}${curtime}${this.secret}`);
+  }
+
+  llmBody(word: string): string {
     this.isChinese = this.detectChinese(word);
     this.word = word;
 
     const from = this.isChinese ? "zh-CHS" : "auto";
     const to = this.isChinese ? "en" : "zh-CHS";
     const salt = Math.floor(Math.random() * 10000).toString();
-    const sign = md5(`${this.key}${word}${salt}${this.secret}`);
+    const curtime = Math.floor(Date.now() / 1000).toString();
+    const sign = this.buildSign(word, salt, curtime);
 
-    const params = new URLSearchParams({
-      q: word,
-      from,
-      to,
+    return new URLSearchParams({
       appKey: this.key,
       salt,
+      signType: "v3",
       sign,
-    });
-
-    return "https://openapi.youdao.com/api?" + params.toString();
+      curtime,
+      i: word,
+      handleOption: "0",
+      from,
+      to,
+      streamType: "full",
+    }).toString();
   }
 
-  parse(data: any): Result[] {
-    if (data.errorCode !== "0") {
-      return this.parseError(data.errorCode);
+  parse(llmText: string): Result[] {
+    const result = this.parseSSE(llmText);
+    if (result) {
+      const segments = this.splitByPunctuation(result);
+      const pronounce = this.isChinese ? result : this.word;
+      segments.forEach((seg, i) => {
+        const sub = segments.length > 1
+          ? `有道翻译 (${i + 1}/${segments.length})`
+          : "有道翻译";
+        this.addResult(seg, sub, seg, pronounce, result);
+      });
+    } else {
+      this.addResult("👻 翻译出错啦", "未获取到翻译结果", "Ooops...");
     }
-
-    const { translation, basic, web } = data;
-
-    this.parseTranslation(translation);
-    this.parseBasic(basic);
-    this.parseWeb(web);
 
     return this.results;
   }
 
-  private parseTranslation(translation: object) {
-    if (translation) {
-      const pronounce = this.isChinese ? translation[0] : this.word;
-      this.addResult( translation[0], this.word, translation[0], pronounce );
-    }
-  }
+  private splitByPunctuation(text: string): string[] {
+    if (text.length <= 60) return [text];
 
-  private parseBasic(basic: any) {
-    if (basic) {
-      let pronounce;
-      basic.explains.forEach((explain) => {
-        pronounce = this.isChinese ? explain : this.word;
-        this.addResult(explain, this.word, explain, pronounce);
-      });
+    // 按句末标点拆分：。. ！! ？? ；; \n
+    // 不拆分：引号 "" '' 括号 （）() 《》 【】 等
+    const segments: string[] = [];
+    let current = "";
 
-      if (basic.phonetic) {
-        // 获取音标，同时确定要发音的单词
-        const phonetic: string = this.parsePhonetic(basic);
-        this.addResult( phonetic, "回车可听发音", "~" + pronounce, pronounce );
+    for (let i = 0; i < text.length; i++) {
+      current += text[i];
+      if (/[。.!！？?；;\n]/.test(text[i])) {
+        const trimmed = current.trim();
+        if (trimmed) {
+          segments.push(trimmed);
+          current = "";
+        }
       }
     }
-  }
 
-  private parseWeb(web: any) {
-    if (web) {
-      web.forEach((item, index) => {
-        let pronounce = this.isChinese ? item.value[0] : item.key;
-        this.addResult( item.value.join(", "), item.key, item.value[0], pronounce);
-      });
-    }
-  }
-
-  private parsePhonetic(basic: any): string {
-    let phonetic: string = '';
-
-    if (this.isChinese && basic.phonetic) {
-      phonetic = "[" + basic.phonetic + "] ";
+    // 剩余内容
+    const remaining = current.trim();
+    if (remaining) {
+      // 如果剩余太长，按逗号拆分
+      if (remaining.length > 60 && segments.length > 0) {
+        const last = segments[segments.length - 1];
+        segments[segments.length - 1] = last + remaining;
+      } else {
+        segments.push(remaining);
+      }
     }
 
-    if (basic["us-phonetic"]) {
-      phonetic += " [美: " + basic["us-phonetic"] + "] ";
-    }
-
-    if (basic["uk-phonetic"]) {
-      phonetic += " [英: " + basic["uk-phonetic"] + "]";
-    }
-
-    return phonetic;
+    return segments.length > 0 ? segments : [text];
   }
 
-  private parseError(code: number): Result[] {
-    const messages = {
-      101: "缺少必填的参数",
-      102: "不支持的语言类型",
-      103: "翻译文本过长",
-      108: "应用ID无效",
-      110: "无相关服务的有效实例",
-      111: "开发者账号无效",
-      112: "请求服务无效",
-      113: "查询为空",
-      202: "签名检验失败,检查 KEY 和 SECRET",
-      401: "账户已经欠费",
-      411: "访问频率受限",
-    };
-
-    const message = messages[code] || "请参考错误码：" + code;
-
-    return this.addResult("👻 翻译出错啦", message, "Ooops...");
+  private parseSSE(text: string): string | null {
+    let lastFull = "";
+    const lines = text.split("\n");
+    for (const line of lines) {
+      if (line.startsWith("data:")) {
+        try {
+          const json = JSON.parse(line.slice(5).trim());
+          if (json.code === "0" && json.data && json.data.transFull) {
+            lastFull = json.data.transFull;
+          }
+        } catch (_) {}
+      }
+    }
+    return lastFull || null;
   }
 
-  private addResult( title: string, subtitle: string, arg: string = "", pronounce: string = ""): Result[] {
+  private addResult(title: string, subtitle: string, arg: string = "", pronounce: string = "", fullText?: string): Result[] {
     const quicklookurl = "https://www.youdao.com/w/" + this.word;
-
-    const maxLength = this.detectChinese(title) ? 27 : 60;
-    
-    if (title.length > maxLength) {
-      const copy = title;
-      title = copy.slice(0, maxLength);
-      subtitle = copy.slice(maxLength);
-    }
-
-    this.results.push({ title, subtitle, arg, pronounce, quicklookurl });
+    this.results.push({ title, subtitle, arg, pronounce, quicklookurl, fullText });
     return this.results;
   }
 
   private detectChinese(word: string): boolean {
-    return /^[\u4e00-\u9fa5]+$/.test(word);
+    return /^[一-龥]+$/.test(word);
   }
 }
 
